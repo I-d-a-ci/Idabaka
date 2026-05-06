@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CONFESSA APP</title>
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import {
+    getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+    signOut, onAuthStateChanged, updateProfile
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import {
+    getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc,
+    query, orderBy, limit, serverTimestamp, onSnapshot, increment, getDoc, setDoc
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  // ════════════════════════════════════════════════════════
+  //  CONFIGURAÇÃO FIREBASE — idabak-7e3f2
+  // ════════════════════════════════════════════════════════
+  const firebaseConfig = {
+    apiKey: "AIzaSyCEVaXBy_aUi7boe8YdmtCUJRUstNZMTWA",
+    authDomain: "idabak-7e3f2.firebaseapp.com",
+    projectId: "idabak-7e3f2",
+    storageBucket: "idabak-7e3f2.firebasestorage.app",
+    messagingSenderId: "725792424043",
+    appId: "1:725792424043:web:a5ba1f99ce401abd8db12e",
+    measurementId: "G-PFV7L3HGND"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  let currentUser = null;
+  let currentShareId = null;
+  let currentDelId = null;
+  let localReactions = {};
+
+  // ════════════════════════════════════════════════════════
+  //  SISTEMA DE AUTENTICAÇÃO
+  // ════════════════════════════════════════════════════════
+
+  // Mostrar/esconder ecrãs
+  function showAuth(mode = 'login') {
+    document.getElementById('auth-screen').style.display = 'flex';
+    document.getElementById('main-app').style.display = 'none';
+    setAuthMode(mode);
+  }
+
+  function hideAuth() {
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('main-app').style.display = 'block';
+  }
+
+  function setAuthMode(mode) {
+    const isLogin = mode === 'login';
+    document.getElementById('auth-title').textContent = isLogin ? 'ENTRAR' : 'CRIAR CONTA';
+    document.getElementById('auth-subtitle').textContent = isLogin
+      ? 'Acede à tua conta anónima'
+      : 'Junta-te à comunidade';
+    document.getElementById('auth-name-wrap').style.display = isLogin ? 'none' : 'block';
+    document.getElementById('auth-submit-btn').textContent = isLogin ? 'ENTRAR ✦' : 'CRIAR CONTA ✦';
+    document.getElementById('auth-toggle-text').innerHTML = isLogin
+      ? 'Não tens conta? <span id="auth-toggle-link" onclick="window.setAuthMode(\'register\')">Cria aqui</span>'
+      : 'Já tens conta? <span id="auth-toggle-link" onclick="window.setAuthMode(\'login\')">Entrar</span>';
+    document.getElementById('auth-error').textContent = '';
+    document.getElementById('auth-screen').dataset.mode = mode;
+  }
+
+  window.setAuthMode = setAuthMode;
+
+  function translateAuthError(code) {
+    const map = {
+      'auth/invalid-email': 'Email inválido.',
+      'auth/user-not-found': 'Utilizador não encontrado.',
+      'auth/wrong-password': 'Palavra-passe incorreta.',
+      'auth/email-already-in-use': 'Este email já está registado.',
+      'auth/weak-password': 'A palavra-passe deve ter pelo menos 6 caracteres.',
+      'auth/too-many-requests': 'Muitas tentativas. Tenta mais tarde.',
+      'auth/network-request-failed': 'Erro de ligação. Verifica a internet.',
+      'auth/invalid-credential': 'Credenciais inválidas. Verifica o email e a palavra-passe.',
+    };
+    return map[code] || 'Ocorreu um erro. Tenta novamente.';
+  }
+
+  window.submitAuth = async () => {
+    const mode = document.getElementById('auth-screen').dataset.mode;
+    const email = document.getElementById('auth-email').value.trim();
+    const password = document.getElementById('auth-password').value;
+    const name = document.getElementById('auth-name').value.trim();
+    const errEl = document.getElementById('auth-error');
+    const btn = document.getElementById('auth-submit-btn');
+
+    // Validações básicas do lado do cliente
+    if (!email || !password) { errEl.textContent = 'Preenche todos os campos.'; return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errEl.textContent = 'Email inválido.'; return; }
+    if (password.length < 6) { errEl.textContent = 'Mínimo 6 caracteres na palavra-passe.'; return; }
+    if (mode === 'register' && name.length < 2) { errEl.textContent = 'Escreve um nome (mínimo 2 caracteres).'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'A processar...';
+    errEl.textContent = '';
+
+    try {
+      if (mode === 'register') {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        // Guardar display name
+        await updateProfile(cred.user, { displayName: name });
+        // Criar doc do utilizador no Firestore
+        await setDoc(doc(db, 'users', cred.user.uid), {
+          displayName: name,
+          email: email,
+          createdAt: serverTimestamp(),
+          confessionsCount: 0
+        });
+        toast('👻 Bem-vindo/a, ' + name + '!');
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+        toast('✦ Bem-vindo/a de volta!');
+      }
+      // onAuthStateChanged irá tratar do resto
+    } catch (err) {
+      errEl.textContent = translateAuthError(err.code);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = mode === 'login' ? 'ENTRAR ✦' : 'CRIAR CONTA ✦';
+    }
+  };
+
+  window.doLogout = async () => {
+    try {
+      await signOut(auth);
+      toast('👋 Sessão terminada.');
+    } catch(e) {}
+  };
+
+  // Permitir submissão com Enter
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && document.getElementById('auth-screen').style.display !== 'none') {
+      window.submitAuth();
+    }
+  });
+
+  // ────────── LISTENER DE ESTADO ──────────
+  onAuthStateChanged(auth, user => {
+    if (user) {
+      currentUser = user;
+      hideAuth();
+      // Atualizar nome no perfil
+      const pname = document.getElementById('pname-display');
+      if (pname) pname.textContent = (user.displayName || 'Fantasma Anónimo').toUpperCase();
+      const phandle = document.getElementById('phandle-display');
+      if (phandle) phandle.textContent = '@' + (user.email || 'anon').split('@')[0].toLowerCase() + ' · membro desde ' + new Date(user.metadata.creationTime).getFullYear();
+      loadFeed();
+      updateLiveCount();
+    } else {
+      currentUser = null;
+      showAuth('login');
+    }
+  });
+
+  // ────────── HELPERS SEGUROS ──────────
+  function sanitize(str) {
+    const d = document.createElement('div');
+    d.textContent = String(str || '');
+    return d.innerHTML;
+  }
+
+  function escAttr(str) {
+    return String(str || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function ghostName() {
+    return 'Fantasma #' + (Math.floor(Math.random() * 9000) + 1000);
+  }
+
+  const EMOJIS = ['🌙','🔥','🌺','💫','🌊','🌸','⭐','🌟','💜','🎭'];
+  const GRADS = [
+    'linear-gradient(135deg,#9b5cf6,#6d28d9)',
+    'linear-gradient(135deg,#ff2d6b,#7c3aed)',
+    'linear-gradient(135deg,#1d9e75,#0f6e56)',
+    'linear-gradient(135deg,#378add,#185fa5)'
+  ];
+  function randItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  // ────────── FIRESTORE: FEED ──────────
+  async function loadFeed(sortField = 'likes') {
+    const feed = document.getElementById('feed');
+    feed.innerHTML = '<div class="loading">A carregar confissões...</div>';
+    try {
+      const q = query(collection(db, 'confessions'), orderBy(sortField, 'desc'), limit(30));
+      // Real-time listener
+      onSnapshot(q, snap => {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderFeed(docs, 'feed');
+      });
+    } catch (e) {
+      feed.innerHTML = '<div class="empty-state"><span class="es-icon">⚠️</span><p>Erro ao carregar. Verifica a ligação Firebase.</p></div>';
+    }
+  }
+
+  async function loadMyConfs() {
+    const el = document.getElementById('mylist');
+    if (!currentUser) return;
+    el.innerHTML = '<div class="loading">A carregar...</div>';
+    try {
+      const q = query(
+        collection(db, 'confessions'),
+        orderBy('createdAt', 'desc'),
+        limit(50)
+      );
+      const snap = await getDocs(q);
+      const mine = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(c => c.uid === currentUser.uid);
+      if (!mine.length) {
+        el.innerHTML = '<div class="empty-state"><span class="es-icon">👻</span><p>Ainda não publicaste nenhuma confissão.</p><span>Clica em ✦ para partilhar o teu segredo!</span></div>';
+      } else {
+        el.innerHTML = mine.map(c => card(c, true)).join('');
+        updateProfileStats(mine);
+      }
+    } catch (e) {
+      el.innerHTML = '<div class="empty-state"><span class="es-icon">⚠️</span><p>Erro Firebase.</p></div>';
+    }
+  }
+
+  async function updateLiveCount() {
+    try {
+      const snap = await getDocs(collection(db, 'confessions'));
+      const el = document.getElementById('live-count');
+      if (el) el.textContent = snap.size.toLocaleString('pt');
+    } catch (e) {}
+  }
+
+  // ────────── CARD RENDER (seguro contra XSS) ──────────
+  function card(c, isMine = false) {
+    const safeText = sanitize(c.text);
+    const safeName = sanitize(c.name || 'Fantasma');
+    const safeTime = sanitize(c.timeLabel || 'há pouco');
+    const safeBadge = sanitize(c.badge || 'Confissão');
+    const safeAv = sanitize(c.av || '👻');
+    const safeBg = escAttr(c.bg || 'linear-gradient(135deg,#7c3aed,#ff2d6b)');
+    const safeId = escAttr(c.id);
+    const r = localReactions[c.id] || { liked: false, hugged: false };
+    const likeCount = Number(c.likes) || 0;
+    const hugCount = Number(c.hugs) || 0;
+    return `<div class="conf-card" onclick="window.openDet('${safeId}')">
+      <div class="cc-head">
+        <div class="cc-av" style="background:${safeBg}">${safeAv}</div>
+        <div class="cc-meta">
+          <div class="cc-name">${safeName}${isMine ? ' <span style="font-size:10px;color:var(--violet);font-weight:700;">· TU</span>' : ''}</div>
+          <div class="cc-time">${safeTime}</div>
+        </div>
+        <div class="cc-badge ${escAttr(c.bc || 'bpu')}">${safeBadge}</div>
+      </div>
+      <div class="cc-text">${safeText}</div>
+      <div class="cc-actions">
+        <div class="act-btn${r.liked ? ' liked' : ''}" onclick="event.stopPropagation();window.tgL('${safeId}',this)">${r.liked ? '❤️' : '🤍'} <span>${likeCount}</span></div>
+        <div class="act-btn${r.hugged ? ' hugged' : ''}" onclick="event.stopPropagation();window.tgH('${safeId}',this)">🫂 <span>${hugCount}</span></div>
+        <div class="share-zone">
+          <div class="share-btn" onclick="event.stopPropagation();window.openShare('${safeId}')">↗ Partilhar</div>
+          ${isMine ? `<div class="del-btn" onclick="event.stopPropagation();window.openDel('${safeId}')">🗑️</div>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderFeed(list, tid) {
+    const el = document.getElementById(tid);
+    if (!el) return;
+    if (!list.length) {
+      el.innerHTML = '<div class="empty-state"><span class="es-icon">👻</span><p>Sem confissões ainda.</p></div>';
+      return;
+    }
+    el.innerHTML = list.map(c => card(c)).join('');
+  }
+
+  // ────────── REAÇÕES (rate-limited localmente) ──────────
+  window.tgL = async (id, btn) => {
+    if (!currentUser) return;
+    const r = localReactions[id] || { liked: false, hugged: false };
+    r.liked = !r.liked;
+    localReactions[id] = r;
+    const delta = r.liked ? 1 : -1;
+    btn.className = 'act-btn' + (r.liked ? ' liked' : '');
+    const ref = doc(db, 'confessions', id);
+    try {
+      await updateDoc(ref, { likes: increment(delta) });
+      if (r.liked) toast('❤️ Reagiste!');
+    } catch (e) {
+      r.liked = !r.liked; // revert
+      toast('⚠️ Erro ao reagir.');
+    }
+  };
+
+  window.tgH = async (id, btn) => {
+    if (!currentUser) return;
+    const r = localReactions[id] || { liked: false, hugged: false };
+    r.hugged = !r.hugged;
+    localReactions[id] = r;
+    const delta = r.hugged ? 1 : -1;
+    btn.className = 'act-btn' + (r.hugged ? ' hugged' : '');
+    const ref = doc(db, 'confessions', id);
+    try {
+      await updateDoc(ref, { hugs: increment(delta) });
+      if (r.hugged) toast('🫂 Abraço enviado!');
+    } catch (e) {
+      r.hugged = !r.hugged;
+      toast('⚠️ Erro.');
+    }
+  };
+
+  // ────────── PUBLICAR ──────────
+  window.publish = async () => {
+    const txtEl = document.getElementById('ctxt');
+    const txt = txtEl.value.trim();
+    if (txt.length < 10) { toast('⚠️ Mínimo 10 caracteres'); return; }
+    if (txt.length > 500) { toast('⚠️ Máximo 500 caracteres'); return; }
+    if (!currentUser) { toast('⚠️ Não autenticado'); return; }
+
+    const btn = document.querySelector('.pub-btn');
+    btn.disabled = true;
+    btn.textContent = 'A publicar...';
+
+    const selCatEl = document.querySelector('.cat-b.active');
+    const selCat = selCatEl ? selCatEl.dataset.cat : 'Confissão';
+
+    try {
+      await addDoc(collection(db, 'confessions'), {
+        uid: currentUser.uid,
+        text: txt,
+        name: ghostName(),
+        av: randItem(EMOJIS),
+        bg: randItem(GRADS),
+        badge: selCat,
+        bc: 'bpu',
+        timeLabel: 'agora mesmo',
+        likes: 0,
+        hugs: 0,
+        comments: [],
+        tags: [],
+        createdAt: serverTimestamp()
+      });
+      document.getElementById('m-new').style.display = 'none';
+      updateLiveCount();
+      toast('✦ Confissão publicada anonimamente!');
+      go('home');
+    } catch (e) {
+      toast('⚠️ Erro ao publicar: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Publicar ✦';
+    }
+  };
+
+  // ────────── APAGAR ──────────
+  window.openDel = (id) => {
+    currentDelId = id;
+    document.getElementById('m-del').style.display = 'flex';
+    document.getElementById('del-confirm-btn').onclick = () => window.confirmDel();
+  };
+
+  window.confirmDel = async () => {
+    if (!currentDelId || !currentUser) return;
+    try {
+      const ref = doc(db, 'confessions', currentDelId);
+      const snap = await getDoc(ref);
+      if (!snap.exists() || snap.data().uid !== currentUser.uid) {
+        toast('⚠️ Não tens permissão para apagar isto.');
+        return;
+      }
+      await deleteDoc(ref);
+      document.getElementById('m-del').style.display = 'none';
+      document.getElementById('m-det').style.display = 'none';
+      toast('🗑️ Confissão apagada!');
+      loadMyConfs();
+      updateLiveCount();
+    } catch (e) {
+      toast('⚠️ Erro ao apagar.');
+    }
+  };
+
+  // ────────── DETALHE ──────────
+  window.openDet = async (id) => {
+    const ref = doc(db, 'confessions', id);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) { toast('⚠️ Confissão não encontrada.'); return; }
+      const c = { id: snap.id, ...snap.data() };
+      const isMine = currentUser && c.uid === currentUser.uid;
+      const r = localReactions[id] || { liked: false, hugged: false };
+      const safeText = sanitize(c.text);
+      const safeName = sanitize(c.name || 'Fantasma');
+      const safeTime = sanitize(c.timeLabel || 'há pouco');
+      const safeBg = escAttr(c.bg || '');
+      const safeAv = sanitize(c.av || '👻');
+      const safeBadge = sanitize(c.badge || 'Confissão');
+      const safeId = escAttr(id);
+
+      const cmtsHtml = (c.comments || []).map(cm => `
+        <div class="cmt">
+          <div class="cmt-av">${sanitize(cm.av || '👻')}</div>
+          <div class="cmt-body">
+            <div class="cmt-user">${sanitize(cm.name || 'Anon')}</div>
+            <div class="cmt-txt">${sanitize(cm.txt)}</div>
+          </div>
+        </div>`).join('');
+
+      document.getElementById('m-det-body').innerHTML = `
+        <div class="mhandle"></div>
+        <div class="cc-head">
+          <div class="cc-av" style="background:${safeBg}">${safeAv}</div>
+          <div class="cc-meta"><div class="cc-name">${safeName}</div><div class="cc-time">${safeTime}</div></div>
+          <div class="cc-badge ${escAttr(c.bc || 'bpu')}">${safeBadge}</div>
+        </div>
+        <div class="detail-text">${safeText}</div>
+        <div class="cc-actions" style="margin-bottom:16px">
+          <div class="act-btn${r.liked ? ' liked' : ''}" onclick="window.tgL('${safeId}',this)">${r.liked ? '❤️' : '🤍'} <span>${Number(c.likes)||0}</span></div>
+          <div class="act-btn${r.hugged ? ' hugged' : ''}" onclick="window.tgH('${safeId}',this)">🫂 <span>${Number(c.hugs)||0}</span></div>
+          <div class="share-zone">
+            <div class="share-btn" onclick="window.openShare('${safeId}')">↗ Partilhar</div>
+            ${isMine ? `<div class="del-btn" onclick="window.openDel('${safeId}')">🗑️ Apagar</div>` : ''}
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:16px">
+          <div class="cmts-lbl">💬 ${(c.comments||[]).length} COMENTÁRIOS</div>
+          ${cmtsHtml}
+          <div class="cmt-row">
+            <input type="text" id="ci-${safeId}" maxlength="300" placeholder="Comentário anónimo..." onkeydown="if(event.key==='Enter')window.sendCmt('${safeId}')">
+            <button class="send-fab" onclick="window.sendCmt('${safeId}')">✦</button>
+          </div>
+        </div>`;
+      document.getElementById('m-det').style.display = 'flex';
+    } catch (e) {
+      toast('⚠️ Erro ao abrir confissão.');
+    }
+  };
+
+  window.sendCmt = async (id) => {
+    const inp = document.getElementById(`ci-${id}`);
+    if (!inp || !inp.value.trim()) return;
+    const txt = inp.value.trim().substring(0, 300);
+    const ref = doc(db, 'confessions', id);
+    try {
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return;
+      const existing = snap.data().comments || [];
+      await updateDoc(ref, {
+        comments: [...existing, { av: '👻', name: 'Anon', txt }]
+      });
+      toast('💬 Comentário enviado!');
+      window.openDet(id);
+    } catch (e) {
+      toast('⚠️ Erro ao comentar.');
+    }
+  };
+
+  // ────────── PARTILHAR ──────────
+  window.openShare = (id) => {
+    currentShareId = id;
+    document.getElementById('m-share').style.display = 'flex';
+  };
+
+  async function getShareText(id) {
+    try {
+      const snap = await getDoc(doc(db, 'confessions', id));
+      if (!snap.exists()) return '';
+      const text = snap.data().text || '';
+      return `👻 Confessa App\n\n"${text.substring(0, 150)}${text.length > 150 ? '...' : ''}"\n\n🔗 confessa.app`;
+    } catch { return ''; }
+  }
+
+  window.shareWA = async () => {
+    const txt = encodeURIComponent(await getShareText(currentShareId));
+    window.open(`https://api.whatsapp.com/send?text=${txt}`, '_blank', 'noopener,noreferrer');
+    document.getElementById('m-share').style.display = 'none';
+    toast('💬 A abrir WhatsApp...');
+  };
+  window.shareIG = async () => {
+    const txt = await getShareText(currentShareId);
+    navigator.clipboard.writeText(txt).then(() => {
+      document.getElementById('m-share').style.display = 'none';
+      toast('📋 Texto copiado! Cola no Instagram Stories.');
+    });
+  };
+  window.shareCopy = async () => {
+    const txt = await getShareText(currentShareId);
+    navigator.clipboard.writeText(txt).then(() => {
+      document.getElementById('m-share').style.display = 'none';
+      toast('🔗 Link copiado!');
+    });
+  };
+  window.shareX = async () => {
+    const txt = encodeURIComponent(await getShareText(currentShareId));
+    window.open(`https://twitter.com/intent/tweet?text=${txt}`, '_blank', 'noopener,noreferrer');
+    document.getElementById('m-share').style.display = 'none';
+    toast('✕ A abrir X...');
+  };
+
+  // ────────── PESQUISA ──────────
+  window.doSearch = async (v) => {
+    if (!v.trim()) { document.getElementById('sresults').innerHTML = ''; return; }
+    const safe = v.trim().toLowerCase().substring(0, 100);
+    document.getElementById('sresults').innerHTML = '<div class="loading">A pesquisar...</div>';
+    try {
+      const snap = await getDocs(query(collection(db, 'confessions'), orderBy('createdAt', 'desc'), limit(100)));
+      const r = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(c => (c.text || '').toLowerCase().includes(safe) || (c.tags || []).some(t => t.includes(safe)));
+      document.getElementById('sresults').innerHTML = r.length
+        ? r.map(c => card(c)).join('')
+        : '<div class="empty-state"><span class="es-icon">🔍</span><p>Nenhuma confissão encontrada.</p><span>Tenta outra pesquisa</span></div>';
+    } catch (e) {
+      document.getElementById('sresults').innerHTML = '<div class="empty-state"><span class="es-icon">⚠️</span><p>Erro ao pesquisar.</p></div>';
+    }
+  };
+  window.stag = (t) => { document.getElementById('sinput').value = t; window.doSearch(t); };
+
+  // ────────── SORT FEED ──────────
+  window.swTab = (el, type) => {
+    document.querySelectorAll('.ftab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    const fieldMap = { hot: 'likes', new: 'createdAt', following: 'hugs' };
+    loadFeed(fieldMap[type] || 'likes');
+  };
+
+  // ────────── PROFILE STATS ──────────
+  function updateProfileStats(mine = []) {
+    document.getElementById('mycc').textContent = mine.length;
+    document.getElementById('myLikes').textContent = mine.reduce((s, c) => s + (Number(c.likes) || 0), 0);
+    document.getElementById('myFollowers').textContent = 0;
+  }
+
+  // ────────── NAVIGATION ──────────
+  window.go = (p) => {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.ni').forEach(n => n.classList.remove('active'));
+    const map = { home: 's-home', search: 's-search', rank: 's-rank', notif: 's-notif', com: 's-com', profile: 's-profile' };
+    const navMap = { home: 'ni-home', search: 'ni-search', notif: 'ni-notif', profile: 'ni-profile' };
+    const el = document.getElementById(map[p]);
+    if (el) el.classList.add('active');
+    const ni = document.getElementById(navMap[p]);
+    if (ni) ni.classList.add('active');
+    if (p === 'profile') loadMyConfs();
+    if (p === 'search') document.getElementById('sresults').innerHTML = '';
+  };
+
+  // ────────── NEW CONFESSION MODAL ──────────
+  const CATS = ['💔 Amor','👨‍👩‍👧 Família','💼 Trabalho','😔 Arrependimento','🤫 Segredo','😊 Alegria','😨 Medo','🔥 Desabafo'];
+  window.openNew = () => {
+    document.getElementById('ctxt').value = '';
+    document.getElementById('ccount').textContent = '0';
+    document.getElementById('catlist').innerHTML = CATS.map(c =>
+      `<div class="cat-b" data-cat="${escAttr(c)}" onclick="this.closest('.cats').querySelectorAll('.cat-b').forEach(b=>b.classList.remove('active'));this.classList.add('active')">${sanitize(c)}</div>`
+    ).join('');
+    document.getElementById('m-new').style.display = 'flex';
+  };
+
+  // ────────── TOAST ──────────
+  window.toast = (msg) => {
+    const el = document.getElementById('toastEl');
+    el.textContent = msg;
+    el.classList.add('on');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('on'), 2500);
+  };
+</script>
+
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --bg:#080810;--bg2:#0d0d1a;--bg3:#121220;
+  --card:#101020;--card2:#161628;--card3:#1c1c30;
+  --pink:#ff2d6b;--purple:#7c3aed;--violet:#a855f7;
+  --gold:#f59e0b;--teal:#14b8a6;
+  --grad:linear-gradient(135deg,#ff2d6b,#7c3aed);
+  --grad2:linear-gradient(135deg,#7c3aed,#06b6d4);
+  --text:#f1f0ff;--text2:#8888b0;--text3:#44445a;
+  --border:#181830;--border2:#242444;--r:16px;
+}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:'Barlow',sans-serif;
+  min-height:100vh;overflow-x:hidden;
+}
+.app{max-width:430px;margin:0 auto;min-height:100vh;position:relative;padding-bottom:90px;}
+
+/* NOISE */
+body::before{
+  content:'';position:fixed;inset:0;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events:none;z-index:0;opacity:.35;
+}
+
+/* ── HEADER ── */
+.header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 18px;background:rgba(8,8,16,0.97);
+  backdrop-filter:blur(24px);position:sticky;top:0;z-index:100;
+  border-bottom:1px solid var(--border);
+}
+.logo{display:flex;align-items:center;gap:10px;}
+.logo-icon{
+  width:36px;height:36px;background:var(--grad);
+  border-radius:10px;display:flex;align-items:center;
+  justify-content:center;font-size:18px;
+  box-shadow:0 0 20px rgba(255,45,107,.3);
+}
+/* Estilo CONFESSA APP: CAPS + Barlow Black */
+.logo-text .lt1{
+  font-family:'Barlow',sans-serif;
+  font-size:16px;font-weight:900;
+  color:var(--text);letter-spacing:1px;
+  text-transform:uppercase;
+}
+.logo-text .lt2{
+  font-family:'Barlow',sans-serif;
+  font-size:10px;font-weight:800;
+  background:var(--grad);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  letter-spacing:4px;text-transform:uppercase;
+}
+.header-right{display:flex;gap:8px;align-items:center;}
+.btn-icon{
+  width:36px;height:36px;border-radius:10px;
+  background:var(--card);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;font-size:16px;transition:.2s;position:relative;
+}
+.btn-icon:hover{border-color:var(--border2);}
+.notif-dot{
+  position:absolute;top:6px;right:6px;
+  width:7px;height:7px;background:var(--pink);
+  border-radius:50%;border:2px solid var(--bg);
+  animation:pulse 2s infinite;
+}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.btn-perfil{
+  display:flex;align-items:center;gap:8px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:50px;padding:5px 12px 5px 5px;
+  cursor:pointer;transition:.2s;
+}
+.btn-perfil:hover{border-color:var(--violet);}
+.mini-av{width:26px;height:26px;background:var(--grad);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;}
+.btn-perfil span{
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--text2);letter-spacing:.5px;
+  text-transform:uppercase;
+}
+
+/* SCREENS */
+.screen{display:none;animation:fadeUp .3s ease;position:relative;z-index:1;}
+.screen.active{display:block;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── HOME ── */
+.hero{padding:36px 20px 24px;text-align:center;}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:6px;
+  background:rgba(255,45,107,0.07);
+  border:1px solid rgba(255,45,107,0.2);
+  border-radius:50px;padding:5px 16px;
+  font-family:'Barlow',sans-serif;
+  font-size:10px;font-weight:800;
+  color:var(--pink);letter-spacing:3px;
+  text-transform:uppercase;margin-bottom:20px;
+}
+/* Hero heading: BEBAS NEUE — estilo display como na screenshot */
+.hero h1{
+  font-family:'Bebas Neue',sans-serif;
+  font-size:52px;font-weight:400;
+  line-height:1.05;margin-bottom:14px;
+  color:var(--text);letter-spacing:1px;
+  text-transform:uppercase;
+}
+.hero h1 em{
+  font-family:'Bebas Neue',sans-serif;
+  font-style:normal;
+  background:var(--grad);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.hero p{
+  font-family:'Barlow',sans-serif;
+  font-size:13px;font-weight:400;
+  color:var(--text3);line-height:1.85;
+  margin-bottom:22px;max-width:300px;
+  margin-left:auto;margin-right:auto;
+}
+.hero-stat{
+  display:inline-flex;align-items:center;gap:8px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:50px;padding:9px 18px;
+  font-family:'Barlow',sans-serif;
+  font-size:12px;font-weight:700;
+  color:var(--text2);cursor:pointer;transition:.2s;
+  text-transform:uppercase;letter-spacing:.5px;
+}
+.hero-stat:hover{border-color:var(--border2);}
+.fire-ic{color:#ff6b35;}
+
+.write-box{
+  margin:0 16px 20px;background:var(--card);
+  border:1.5px solid var(--border);border-radius:var(--r);
+  padding:16px;cursor:pointer;transition:.3s;
+}
+.write-box:hover{border-color:rgba(124,58,237,.4);background:var(--card2);}
+.wb-top{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
+.anon-av{
+  width:40px;height:40px;background:var(--bg3);
+  border:2px dashed var(--border2);border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;flex-shrink:0;
+}
+.wb-placeholder{
+  font-family:'Barlow',sans-serif;
+  font-size:14px;font-weight:400;
+  color:var(--text3);font-style:italic;
+}
+.wb-btns{display:flex;gap:8px;}
+.wb-btn{
+  flex:1;padding:10px 6px;background:var(--bg3);
+  border:1px solid var(--border);border-radius:12px;
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--text2);text-align:center;
+  cursor:pointer;transition:.2s;
+  text-transform:uppercase;letter-spacing:.5px;
+}
+.wb-btn:hover{background:var(--card2);}
+.wb-main{
+  background:var(--grad);color:white;
+  font-weight:800;border:none;
+  box-shadow:0 4px 20px rgba(255,45,107,.3);
+}
+
+.feed-wrap{padding:0 16px;}
+.feed-tabs{
+  display:flex;gap:4px;margin-bottom:18px;
+  background:var(--card);border-radius:50px;padding:4px;
+}
+.ftab{
+  flex:1;padding:9px 4px;text-align:center;
+  font-family:'Barlow',sans-serif;
+  font-size:10px;font-weight:800;
+  color:var(--text3);border-radius:50px;
+  cursor:pointer;transition:.2s;
+  letter-spacing:1px;text-transform:uppercase;
+}
+.ftab.active{background:var(--grad);color:white;}
+
+/* CONFESSION CARD */
+.conf-card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--r);padding:16px;margin-bottom:14px;
+  transition:.3s;cursor:pointer;position:relative;overflow:hidden;
+}
+.conf-card::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;
+  width:3px;background:var(--grad);opacity:0;transition:.3s;
+  border-radius:3px 0 0 3px;
+}
+.conf-card:hover{border-color:rgba(124,58,237,.25);background:var(--card2);}
+.conf-card:hover::before{opacity:1;}
+.cc-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+.cc-av{
+  width:38px;height:38px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;flex-shrink:0;
+}
+.cc-meta{flex:1;min-width:0;}
+.cc-name{
+  font-family:'Barlow',sans-serif;
+  font-size:13px;font-weight:700;color:var(--text);
+  text-transform:uppercase;letter-spacing:.3px;
+}
+.cc-time{font-size:11px;color:var(--text3);margin-top:1px;}
+.cc-badge{
+  font-family:'Barlow',sans-serif;
+  font-size:9px;padding:3px 10px;
+  border-radius:50px;font-weight:800;
+  white-space:nowrap;letter-spacing:1.5px;
+  text-transform:uppercase;
+}
+.bp{background:rgba(255,45,107,.1);color:var(--pink);border:1px solid rgba(255,45,107,.2);}
+.bpu{background:rgba(124,58,237,.1);color:var(--violet);border:1px solid rgba(124,58,237,.2);}
+.ba{background:rgba(245,158,11,.1);color:var(--gold);border:1px solid rgba(245,158,11,.2);}
+.bt{background:rgba(20,184,166,.1);color:var(--teal);border:1px solid rgba(20,184,166,.2);}
+/* Texto da confissão: serifado para contraste com os títulos */
+.cc-text{
+  font-family:'Instrument Serif',serif;
+  font-size:15px;line-height:1.75;color:var(--text2);
+  margin-bottom:14px;
+  display:-webkit-box;-webkit-line-clamp:4;
+  -webkit-box-orient:vertical;overflow:hidden;
+}
+.cc-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.act-btn{
+  display:flex;align-items:center;gap:5px;
+  padding:7px 11px;border-radius:10px;
+  background:var(--bg3);border:1px solid var(--border);
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--text2);cursor:pointer;transition:.2s;
+  text-transform:uppercase;letter-spacing:.3px;
+}
+.act-btn:hover{background:var(--card3);border-color:var(--border2);}
+.act-btn.liked{color:var(--pink);border-color:rgba(255,45,107,.3);background:rgba(255,45,107,.07);}
+.act-btn.hugged{color:var(--gold);border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.07);}
+.share-zone{margin-left:auto;display:flex;gap:5px;}
+.share-btn,.del-btn{
+  padding:7px 11px;background:var(--bg3);
+  border:1px solid var(--border);border-radius:10px;
+  cursor:pointer;
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:700;
+  transition:.2s;display:flex;align-items:center;gap:4px;
+  text-transform:uppercase;letter-spacing:.3px;
+}
+.share-btn{color:var(--text3);}
+.share-btn:hover{background:var(--card3);border-color:var(--border2);color:var(--text2);}
+.del-btn{color:#ff4444;}
+.del-btn:hover{background:rgba(255,68,68,.07);border-color:rgba(255,68,68,.3);}
+
+/* SECTION TITLES */
+.sec-title{
+  font-family:'Bebas Neue',sans-serif;
+  font-size:32px;font-weight:400;
+  letter-spacing:1px;margin-bottom:4px;
+  text-transform:uppercase;color:var(--text);
+}
+.sec-sub{
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:600;
+  color:var(--text3);margin-bottom:18px;
+  letter-spacing:1px;text-transform:uppercase;
+}
+
+/* ── SEARCH ── */
+.s-head{padding:18px 16px 0;}
+.sbar{
+  display:flex;align-items:center;gap:10px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:14px;padding:11px 14px;
+  margin-bottom:18px;transition:.2s;
+}
+.sbar:focus-within{border-color:rgba(124,58,237,.4);}
+.sbar input{
+  flex:1;background:none;border:none;
+  color:var(--text);
+  font-family:'Barlow',sans-serif;
+  font-size:14px;font-weight:500;outline:none;
+}
+.sbar input::placeholder{color:var(--text3);}
+.trend-lbl{
+  font-family:'Barlow',sans-serif;
+  font-size:10px;font-weight:800;
+  color:var(--text3);letter-spacing:2.5px;
+  margin-bottom:10px;text-transform:uppercase;
+}
+.tags-wrap{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px;}
+.tag{
+  padding:7px 14px;background:var(--card);
+  border:1px solid var(--border);border-radius:50px;
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--text2);cursor:pointer;transition:.2s;
+  text-transform:uppercase;letter-spacing:.5px;
+}
+.tag:hover,.tag.hot{border-color:rgba(255,45,107,.3);color:var(--pink);background:rgba(255,45,107,.05);}
+
+/* ── RANKING ── */
+.rank-header{padding:18px 16px 0;}
+.rank-tabs{display:flex;gap:8px;margin-bottom:20px;}
+.rtab{
+  flex:1;padding:8px;text-align:center;
+  font-family:'Barlow',sans-serif;
+  font-size:10px;font-weight:800;
+  color:var(--text3);border-radius:12px;cursor:pointer;transition:.2s;
+  background:var(--card);border:1px solid var(--border);
+  letter-spacing:1px;text-transform:uppercase;
+}
+.rtab.active{background:var(--grad);color:white;border-color:transparent;}
+.rank-list{padding:0 16px;}
+.rank-card{
+  display:flex;align-items:center;gap:12px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:16px;padding:14px;margin-bottom:10px;transition:.2s;
+}
+.rank-card:hover{border-color:var(--border2);}
+.rank-card.top1{border-color:rgba(245,158,11,.25);background:rgba(245,158,11,.03);}
+.rank-card.top2{border-color:rgba(192,192,192,.15);}
+.rank-card.top3{border-color:rgba(205,127,50,.15);}
+.rnum{font-family:'Bebas Neue',sans-serif;font-size:22px;width:28px;text-align:center;flex-shrink:0;}
+.rnum.g1{color:var(--gold);}
+.rnum.g2{color:#b0b0c0;}
+.rnum.g3{color:#c47c3a;}
+.rnum.gn{color:var(--text3);font-size:16px;}
+.rav{width:44px;height:44px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;position:relative;}
+.rav-crown{position:absolute;top:-8px;left:50%;transform:translateX(-50%);font-size:13px;}
+.rinfo{flex:1;min-width:0;}
+.rname{font-family:'Barlow',sans-serif;font-size:13px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.3px;}
+.rstat{font-size:11px;color:var(--text3);margin-top:2px;}
+.rpts{text-align:right;}
+.rpts-num{font-family:'Bebas Neue',sans-serif;font-size:20px;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.rpts-lbl{font-family:'Barlow',sans-serif;font-size:9px;font-weight:800;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;}
+
+.my-rank-box{
+  margin:0 16px 20px;
+  background:linear-gradient(135deg,rgba(124,58,237,.08),rgba(255,45,107,.08));
+  border:1px solid rgba(124,58,237,.25);border-radius:16px;
+  padding:16px;display:flex;align-items:center;gap:12px;
+}
+.mrb-icon{width:44px;height:44px;background:var(--grad);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;}
+.mrb-info{flex:1;}
+.mrb-title{font-family:'Barlow',sans-serif;font-size:10px;font-weight:800;color:var(--text3);margin-bottom:4px;letter-spacing:2px;text-transform:uppercase;}
+.mrb-pos{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--text);letter-spacing:.5px;}
+.mrb-pts{font-family:'Bebas Neue',sans-serif;font-size:18px;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+
+/* ── NOTIFS ── */
+.notif-i{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border);transition:.2s;}
+.notif-i.unread{background:rgba(124,58,237,.03);}
+.notif-i:hover{background:var(--card);}
+.nav-av2{width:40px;height:40px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+.ni-text{flex:1;font-family:'Barlow',sans-serif;font-size:13px;font-weight:500;color:var(--text2);line-height:1.5;}
+.ni-text strong{color:var(--text);font-weight:700;}
+.ni-time{font-size:11px;color:var(--text3);margin-top:3px;}
+.unread-dot{width:7px;height:7px;background:var(--violet);border-radius:50%;flex-shrink:0;margin-top:6px;}
+
+/* ── COMMUNITY ── */
+.com-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:12px;transition:.2s;}
+.com-card:hover{border-color:var(--border2);}
+.com-icon{font-size:22px;margin-bottom:10px;}
+.com-title{font-family:'Barlow',sans-serif;font-size:14px;font-weight:800;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);}
+.com-text{font-family:'Barlow',sans-serif;font-size:13px;font-weight:400;color:var(--text2);line-height:1.7;}
+
+/* ── PROFILE ── */
+.prof-head{padding:28px 20px 0;text-align:center;}
+.pav-wrap{position:relative;display:inline-block;margin-bottom:14px;}
+.pav{width:80px;height:80px;background:var(--grad);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto;box-shadow:0 0 40px rgba(255,45,107,.25);}
+.pav-badge{position:absolute;bottom:2px;right:2px;width:22px;height:22px;background:var(--bg2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid var(--border);}
+.pname{font-family:'Bebas Neue',sans-serif;font-size:28px;margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase;}
+.phandle{font-family:'Barlow',sans-serif;font-size:11px;font-weight:600;color:var(--text3);margin-bottom:18px;letter-spacing:1px;text-transform:uppercase;}
+.pstats{display:flex;justify-content:center;gap:0;margin-bottom:20px;background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin:0 20px 20px;}
+.ps{flex:1;text-align:center;padding:14px 8px;border-right:1px solid var(--border);}
+.ps:last-child{border-right:none;}
+.ps-num{font-family:'Bebas Neue',sans-serif;font-size:24px;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.ps-lbl{font-family:'Barlow',sans-serif;font-size:9px;font-weight:800;color:var(--text3);margin-top:2px;letter-spacing:1.5px;text-transform:uppercase;}
+.btn-edit{
+  background:var(--card);color:var(--text);
+  border:1px solid var(--border);padding:10px 28px;
+  border-radius:12px;
+  font-family:'Barlow',sans-serif;
+  font-size:12px;font-weight:800;
+  cursor:pointer;margin-bottom:22px;transition:.2s;
+  letter-spacing:1.5px;text-transform:uppercase;
+}
+.btn-edit:hover{border-color:var(--violet);}
+.section-lbl{
+  font-family:'Barlow',sans-serif;
+  font-size:10px;font-weight:800;
+  color:var(--text3);letter-spacing:2.5px;
+  padding:0 20px 12px;text-transform:uppercase;
+}
+.empty-state{text-align:center;padding:40px 20px;color:var(--text3);}
+.empty-state .es-icon{font-size:44px;margin-bottom:14px;display:block;}
+.empty-state p{font-family:'Barlow',sans-serif;font-size:14px;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.3px;}
+.empty-state span{font-size:12px;color:var(--text3);}
+.loading{text-align:center;padding:30px;color:var(--text3);font-family:'Barlow',sans-serif;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;}
+
+/* ── BOTTOM NAV ── */
+.bnav{
+  position:fixed;bottom:0;left:50%;transform:translateX(-50%);
+  width:100%;max-width:430px;
+  background:rgba(8,8,16,.97);backdrop-filter:blur(24px);
+  border-top:1px solid var(--border);
+  padding:10px 16px 20px;
+  display:flex;align-items:center;justify-content:space-around;z-index:100;
+}
+.ni{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:4px 14px;border-radius:12px;transition:.2s;}
+.ni .ico{width:22px;height:22px;color:var(--text3);transition:.2s;}
+.ni.active .ico{color:var(--pink);}
+.ni .lbl{font-family:'Barlow',sans-serif;font-size:9px;font-weight:800;color:var(--text3);letter-spacing:1px;text-transform:uppercase;}
+.ni.active .lbl{color:var(--pink);}
+.ni.active .ico{transform:scale(1.1);}
+.nc-fab{
+  width:52px;height:52px;background:var(--grad);
+  border-radius:16px;display:flex;align-items:center;
+  justify-content:center;cursor:pointer;
+  font-family:'Bebas Neue',sans-serif;font-size:24px;
+  box-shadow:0 4px 28px rgba(255,45,107,.4);
+  transition:.25s;margin-top:-10px;color:white;
+}
+.nc-fab:hover{transform:scale(1.07);}
+.nc-fab:active{transform:scale(.95);}
+
+/* ── MODALS ── */
+.overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.88);
+  z-index:200;display:flex;align-items:flex-end;
+  animation:fadeUp .2s ease;
+}
+.modal{
+  background:var(--bg2);border-radius:24px 24px 0 0;
+  padding:20px;width:100%;max-width:430px;
+  margin:0 auto;max-height:90vh;overflow-y:auto;
+  border-top:1px solid var(--border2);
+}
+.mhandle{width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 18px;}
+.mtitle{
+  font-family:'Bebas Neue',sans-serif;
+  font-size:28px;font-weight:400;margin-bottom:4px;
+  text-transform:uppercase;letter-spacing:.5px;
+}
+.msub{font-family:'Barlow',sans-serif;font-size:11px;font-weight:600;color:var(--text3);margin-bottom:18px;letter-spacing:1px;text-transform:uppercase;}
+.modal textarea{
+  width:100%;background:var(--bg3);border:1px solid var(--border);
+  border-radius:14px;padding:14px;color:var(--text);
+  font-family:'Instrument Serif',serif;
+  font-size:15px;resize:none;outline:none;
+  min-height:140px;transition:.2s;line-height:1.75;
+}
+.modal textarea::placeholder{color:var(--text3);font-style:italic;}
+.modal textarea:focus{border-color:rgba(124,58,237,.5);}
+.char-info{font-size:11px;color:var(--text3);text-align:right;margin-top:6px;display:flex;justify-content:space-between;align-items:center;}
+.cat-lbl{font-family:'Barlow',sans-serif;font-size:10px;font-weight:800;color:var(--text3);margin:14px 0 8px;letter-spacing:2px;text-transform:uppercase;}
+.cats{display:flex;flex-wrap:wrap;gap:7px;}
+.cat-b{
+  padding:7px 14px;border-radius:50px;
+  background:var(--bg3);border:1px solid var(--border);
+  font-family:'Barlow',sans-serif;
+  font-size:11px;font-weight:700;
+  color:var(--text2);cursor:pointer;transition:.2s;
+  text-transform:uppercase;letter-spacing:.3px;
+}
+.cat-b.active{background:rgba(124,58,237,.15);border-color:var(--violet);color:var(--violet);}
+.mfoot{display:flex;align-items:center;justify-content:space-between;margin-top:18px;}
+.anon-tog{display:flex;align-items:center;gap:8px;font-family:'Barlow',sans-serif;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;}
+.tog{width:40px;height:22px;background:var(--violet);border-radius:50px;position:relative;cursor:pointer;}
+.tog-dot{position:absolute;right:3px;top:3px;width:16px;height:16px;background:white;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,.3);}
+.pub-btn{
+  background:var(--grad);color:white;border:none;
+  padding:12px 28px;border-radius:12px;
+  font-family:'Barlow',sans-serif;
+  font-size:12px;font-weight:800;cursor:pointer;
+  letter-spacing:1.5px;text-transform:uppercase;
+  box-shadow:0 4px 20px rgba(255,45,107,.3);transition:.2s;
+}
+.pub-btn:hover{transform:translateY(-1px);}
+.pub-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+/* DETAIL */
+.detail-text{font-family:'Instrument Serif',serif;font-size:16px;line-height:1.85;margin-bottom:18px;color:var(--text);}
+.cmts-lbl{font-family:'Barlow',sans-serif;font-size:10px;font-weight:800;color:var(--text3);letter-spacing:2px;margin-bottom:14px;text-transform:uppercase;}
+.cmt{display:flex;gap:10px;margin-bottom:12px;}
+.cmt-av{width:32px;height:32px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+.cmt-body{flex:1;background:var(--bg3);border-radius:12px;padding:10px 13px;}
+.cmt-user{font-family:'Barlow',sans-serif;font-size:10px;font-weight:800;margin-bottom:4px;color:var(--violet);letter-spacing:1px;text-transform:uppercase;}
+.cmt-txt{font-size:13px;color:var(--text2);line-height:1.55;}
+.cmt-row{display:flex;gap:8px;margin-top:14px;}
+.cmt-row input{
+  flex:1;background:var(--bg3);border:1px solid var(--border);
+  border-radius:12px;padding:11px 13px;color:var(--text);
+  font-family:'Barlow',sans-serif;font-size:13px;outline:none;transition:.2s;
+}
+.cmt-row input:focus{border-color:rgba(124,58,237,.5);}
+.send-fab{width:42px;height:42px;background:var(--grad);border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;font-size:16px;flex-shrink:0;color:white;}
+
+/* SHARE MODAL */
+.share-modal{background:var(--bg2);border-radius:24px 24px 0 0;padding:20px;width:100%;max-width:430px;margin:0 auto;border-top:1px solid var(--border2);}
+.share-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
+.share-opt{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:16px;padding:18px 14px;text-align:center;
+  cursor:pointer;transition:.3s;
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+}
+.share-opt:hover{border-color:var(--border2);transform:translateY(-2px);}
+.share-opt-icon{font-size:28px;}
+.share-opt-name{font-family:'Barlow',sans-serif;font-size:12px;font-weight:800;color:var(--text);text-transform:uppercase;letter-spacing:.5px;}
+.share-opt-sub{font-size:11px;color:var(--text3);}
+.share-opt.wa{border-color:rgba(37,211,102,.15);}
+.share-opt.wa:hover{background:rgba(37,211,102,.04);}
+.share-opt.ig{border-color:rgba(228,64,95,.15);}
+.share-opt.ig:hover{background:rgba(228,64,95,.04);}
+.share-opt.copy{border-color:rgba(124,58,237,.15);}
+.share-opt.copy:hover{background:rgba(124,58,237,.04);}
+.share-opt.x{border-color:rgba(255,255,255,.08);}
+.share-opt.x:hover{background:rgba(255,255,255,.02);}
+
+/* DELETE */
+.del-modal{background:var(--bg2);border-radius:24px 24px 0 0;padding:24px;width:100%;max-width:430px;margin:0 auto;border-top:1px solid var(--border2);text-align:center;}
+.del-icon{font-size:44px;margin-bottom:14px;}
+.del-title{font-family:'Bebas Neue',sans-serif;font-size:26px;margin-bottom:8px;text-transform:uppercase;}
+.del-sub{font-family:'Barlow',sans-serif;font-size:13px;color:var(--text3);margin-bottom:24px;line-height:1.6;}
+.del-actions{display:flex;gap:10px;}
+.del-cancel{
+  flex:1;padding:13px;background:var(--card);
+  border:1px solid var(--border);border-radius:12px;
+  font-family:'Barlow',sans-serif;
+  font-size:12px;font-weight:800;
+  cursor:pointer;color:var(--text);transition:.2s;
+  text-transform:uppercase;letter-spacing:1px;
+}
+.del-cancel:hover{border-color:var(--border2);}
+.del-confirm{
+  flex:1;padding:13px;background:rgba(255,68,68,.12);
+  border:1px solid rgba(255,68,68,.3);border-radius:12px;
+  font-family:'Barlow',sans-serif;
+  font-size:12px;font-weight:800;
+  cursor:pointer;color:#ff4444;transition:.2s;
+  text-transform:uppercase;letter-spacing:1px;
+}
+.del-confirm:hover{background:rgba(255,68,68,.22);}
+
+/* TOAST */
+.toast{
+  position:fixed;bottom:100px;left:50%;transform:translateX(-50%) translateY(16px);
+  background:var(--card3);border:1px solid var(--border2);
+  color:var(--text);
+  font-family:'Barlow',sans-serif;
+  font-size:12px;font-weight:700;
+  padding:10px 20px;border-radius:50px;
+  opacity:0;transition:.3s;z-index:999;
+  pointer-events:none;white-space:nowrap;
+  letter-spacing:.5px;
+}
+/* ══════════════════════════════════
+   AUTH SCREEN
+══════════════════════════════════ */
+.auth-box{
+  width:100%;max-width:400px;
+  background:var(--bg2);
+  border:1px solid var(--border2);
+  border-radius:24px;padding:32px 28px;
+  display:flex;flex-direction:column;
+  box-shadow:0 0 80px rgba(124,58,237,.12);
+}
+.auth-logo{
+  display:flex;align-items:center;gap:12px;
+  margin-bottom:28px;
+}
+.auth-logo-icon{
+  width:48px;height:48px;
+  background:var(--grad);border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:24px;box-shadow:0 0 24px rgba(255,45,107,.3);
+  flex-shrink:0;
+}
+.auth-logo-t1{font-family:'Barlow',sans-serif;font-size:20px;font-weight:900;color:var(--text);letter-spacing:1px;text-transform:uppercase;line-height:1;}
+.auth-logo-t2{font-family:'Barlow',sans-serif;font-size:11px;font-weight:800;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:4px;text-transform:uppercase;}
+.auth-title{font-family:'Bebas Neue',sans-serif;font-size:36px;letter-spacing:1px;color:var(--text);line-height:1;margin-bottom:4px;}
+.auth-sub{font-family:'Barlow',sans-serif;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:1px;text-transform:uppercase;margin-bottom:24px;}
+.auth-lbl{font-family:'Barlow',sans-serif;font-size:10px;font-weight:800;color:var(--text3);letter-spacing:2px;text-transform:uppercase;display:block;margin-bottom:6px;}
+.auth-input{
+  width:100%;background:var(--bg3);
+  border:1px solid var(--border);
+  border-radius:12px;padding:12px 14px;
+  color:var(--text);font-family:'Barlow',sans-serif;
+  font-size:14px;font-weight:500;outline:none;
+  transition:.2s;margin-bottom:12px;
+  -webkit-appearance:none;
+}
+.auth-input:focus{border-color:rgba(124,58,237,.5);background:rgba(124,58,237,.04);}
+.auth-input::placeholder{color:var(--text3);}
+.auth-pw-wrap{position:relative;}
+.auth-pw-wrap .auth-input{padding-right:44px;margin-bottom:0;}
+.pw-eye{position:absolute;right:13px;top:13px;cursor:pointer;font-size:16px;line-height:1;}
+.auth-error{
+  font-family:'Barlow',sans-serif;font-size:12px;font-weight:700;
+  color:#ff4444;min-height:18px;margin:10px 0 4px;
+  letter-spacing:.3px;
+}
+.auth-btn{
+  width:100%;background:var(--grad);color:white;
+  border:none;border-radius:14px;padding:14px;
+  font-family:'Barlow',sans-serif;font-size:14px;font-weight:800;
+  cursor:pointer;letter-spacing:1.5px;text-transform:uppercase;
+  box-shadow:0 4px 24px rgba(255,45,107,.35);
+  transition:.2s;margin-top:8px;
+}
+.auth-btn:hover{transform:translateY(-1px);box-shadow:0 6px 30px rgba(255,45,107,.45);}
+.auth-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+.auth-toggle{
+  text-align:center;margin-top:18px;
+  font-family:'Barlow',sans-serif;font-size:12px;
+  font-weight:600;color:var(--text3);
+}
+.auth-toggle span{
+  color:var(--violet);cursor:pointer;font-weight:800;
+  text-decoration:underline;text-underline-offset:2px;
+}
+.auth-toggle span:hover{color:var(--pink);}
+.auth-privacy{
+  text-align:center;margin-top:16px;
+  font-family:'Barlow',sans-serif;font-size:10px;
+  font-weight:600;color:var(--text3);
+  line-height:1.6;letter-spacing:.3px;
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     ECRÃ DE AUTENTICAÇÃO
+══════════════════════════════════════════════ -->
+<div id="auth-screen" style="display:none;position:fixed;inset:0;z-index:9999;background:var(--bg);align-items:center;justify-content:center;padding:24px;">
+  <div class="auth-box">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">👻</div>
+      <div>
+        <div class="auth-logo-t1">CONFESSA</div>
+        <div class="auth-logo-t2">APP</div>
+      </div>
+    </div>
+    <div class="auth-title" id="auth-title">ENTRAR</div>
+    <div class="auth-sub" id="auth-subtitle">Acede à tua conta anónima</div>
+
+    <div id="auth-name-wrap" style="display:none;margin-bottom:4px;">
+      <label class="auth-lbl">NOME ANÓNIMO</label>
+      <input id="auth-name" class="auth-input" type="text" placeholder="Ex: Fantasma Curioso" maxlength="30" autocomplete="nickname">
+    </div>
+
+    <label class="auth-lbl">EMAIL</label>
+    <input id="auth-email" class="auth-input" type="email" placeholder="o.teu@email.com" maxlength="100" autocomplete="email">
+
+    <label class="auth-lbl" style="margin-top:12px;">PALAVRA-PASSE</label>
+    <div class="auth-pw-wrap">
+      <input id="auth-password" class="auth-input" type="password" placeholder="Mínimo 6 caracteres" maxlength="128" autocomplete="current-password">
+      <span class="pw-eye" onclick="const i=document.getElementById('auth-password');i.type=i.type==='password'?'text':'password';this.textContent=i.type==='password'?'👁':'🙈';">👁</span>
+    </div>
+
+    <div id="auth-error" class="auth-error"></div>
+
+    <button id="auth-submit-btn" class="auth-btn" onclick="window.submitAuth()">ENTRAR ✦</button>
+
+    <div class="auth-toggle" id="auth-toggle-text">
+      Não tens conta? <span id="auth-toggle-link" onclick="window.setAuthMode('register')">Cria aqui</span>
+    </div>
+
+    <div class="auth-privacy">🔒 Os teus dados são protegidos. A tua identidade permanece anónima nas confissões.</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     APP PRINCIPAL
+══════════════════════════════════════════════ -->
+<div id="main-app" style="display:none;">
+<div class="app">
+
+<!-- HEADER -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">👻</div>
+    <div class="logo-text">
+      <div class="lt1">CONFESSA</div>
+      <div class="lt2">APP</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="btn-icon" onclick="go('notif')">🔔<div class="notif-dot" id="nd"></div></div>
+    <div class="btn-perfil" onclick="go('profile')">
+      <div class="mini-av">👻</div>
+      <span>Meu Perfil</span>
+    </div>
+    <div class="btn-icon" onclick="window.doLogout()" title="Sair" style="font-size:14px;">⏻</div>
+  </div>
+</div>
+
+<!-- HOME -->
+<div class="screen active" id="s-home">
+  <div class="hero">
+    <div class="hero-badge">✦ CONFESSÕES ANÓNIMAS</div>
+    <h1>Partilha o teu<br><em>segredo</em><br>anonimamente.</h1>
+    <p>Ninguém saberá que és tu. Junta-te a uma comunidade de experiências humanas autênticas e sem filtros.</p>
+    <div class="hero-stat"><span class="fire-ic">🔥</span>&nbsp;<span id="live-count">...</span>&nbsp;PARTILHADOS HOJE</div>
+  </div>
+  <div class="write-box" onclick="openNew()">
+    <div class="wb-top">
+      <div class="anon-av">👻</div>
+      <div class="wb-placeholder">O que trazes guardado dentro de ti?</div>
+    </div>
+    <div class="wb-btns">
+      <div class="wb-btn">😔 Desabafo</div>
+      <div class="wb-btn">🤫 Segredo</div>
+      <div class="wb-btn wb-main" onclick="event.stopPropagation();openNew()">✦ PUBLICAR</div>
+    </div>
+  </div>
+  <div class="feed-wrap">
+    <div class="feed-tabs">
+      <div class="ftab active" onclick="swTab(this,'hot')">🔥 EM ALTA</div>
+      <div class="ftab" onclick="swTab(this,'new')">✨ RECENTES</div>
+      <div class="ftab" onclick="swTab(this,'following')">🫂 ABRAÇOS</div>
+    </div>
+    <div id="feed"><div class="loading">A carregar...</div></div>
+  </div>
+</div>
+
+<!-- SEARCH -->
+<div class="screen" id="s-search">
+  <div class="s-head">
+    <div class="sec-title">DESCOBRIR</div>
+    <div class="sec-sub">Explora confissões e segredos</div>
+    <div class="sbar">
+      <span>🔍</span>
+      <input type="text" id="sinput" maxlength="100" placeholder="Pesquisar confissões..." oninput="doSearch(this.value)">
+    </div>
+    <div class="trend-lbl">🔥 EM TENDÊNCIA</div>
+    <div class="tags-wrap">
+      <span class="tag hot" onclick="stag('#amor')">❤️ #amor</span>
+      <span class="tag hot" onclick="stag('#família')">👨‍👩‍👧 #família</span>
+      <span class="tag" onclick="stag('#trabalho')">💼 #trabalho</span>
+      <span class="tag hot" onclick="stag('#segredo')">🤫 #segredo</span>
+      <span class="tag" onclick="stag('#traição')">💔 #traição</span>
+      <span class="tag" onclick="stag('#arrependimento')">😔 #arrependimento</span>
+      <span class="tag" onclick="stag('#felicidade')">😊 #felicidade</span>
+      <span class="tag" onclick="stag('#medo')">😨 #medo</span>
+    </div>
+  </div>
+  <div class="feed-wrap" id="sresults"></div>
+</div>
+
+<!-- RANKING -->
+<div class="screen" id="s-rank">
+  <div class="rank-header">
+    <div class="sec-title">🏆 RANKING</div>
+    <div class="sec-sub">Confessores mais populares</div>
+    <div class="rank-tabs">
+      <div class="rtab active">ESTA SEMANA</div>
+      <div class="rtab">ESTE MÊS</div>
+      <div class="rtab">SEMPRE</div>
+    </div>
+  </div>
+  <div class="my-rank-box">
+    <div class="mrb-icon">👻</div>
+    <div class="mrb-info">
+      <div class="mrb-title">A TUA POSIÇÃO</div>
+      <div class="mrb-pos">Em breve...</div>
+    </div>
+    <div class="mrb-pts">0 PTS</div>
+  </div>
+  <div class="rank-list" id="rklist">
+    <div class="loading">Ranking via Firebase em breve</div>
+  </div>
+</div>
+
+<!-- NOTIFS -->
+<div class="screen" id="s-notif">
+  <div style="padding:18px 16px 0">
+    <div class="sec-title">🔔 AVISOS</div>
+    <div class="sec-sub">O que aconteceu recentemente</div>
+  </div>
+  <div class="empty-state">
+    <span class="es-icon">🔔</span>
+    <p>Sem notificações ainda</p>
+    <span>As tuas reações aparecerão aqui</span>
+  </div>
+</div>
+
+<!-- COMMUNITY -->
+<div class="screen" id="s-com">
+  <div style="padding:18px 16px">
+    <div class="sec-title">🛡️ COMUNIDADE</div>
+    <div class="sec-sub">Valores que nos unem</div>
+    <div class="com-card"><div class="com-icon">🤝</div><div class="com-title">Respeito Mútuo</div><div class="com-text">Trata os outros como queres ser tratado. Ataques pessoais e linguagem de ódio não são tolerados.</div></div>
+    <div class="com-card"><div class="com-icon">👻</div><div class="com-title">Anonimato Protegido</div><div class="com-text">Nunca tentes identificar outros utilizadores. A privacidade é sagrada aqui.</div></div>
+    <div class="com-card"><div class="com-icon">❤️</div><div class="com-title">Empatia Primeiro</div><div class="com-text">Muitas confissões vêm de lugares dolorosos. Responde sempre com compaixão.</div></div>
+    <div class="com-card"><div class="com-icon">🚫</div><div class="com-title">Conteúdo Proibido</div><div class="com-text">Ódio, violência, conteúdo ilegal ou que prejudique menores é imediatamente removido.</div></div>
+  </div>
+</div>
+
+<!-- PROFILE -->
+<div class="screen" id="s-profile">
+  <div class="prof-head">
+    <div class="pav-wrap">
+      <div class="pav">👻</div>
+      <div class="pav-badge">✨</div>
+    </div>
+    <div class="pname" id="pname-display">FANTASMA ANÓNIMO</div>
+    <div class="phandle" id="phandle-display">@anon · membro desde 2025</div>
+    <div class="pstats">
+      <div class="ps"><div class="ps-num" id="mycc">0</div><div class="ps-lbl">CONFISSÕES</div></div>
+      <div class="ps"><div class="ps-num" id="myFollowers">0</div><div class="ps-lbl">SEGUIDORES</div></div>
+      <div class="ps"><div class="ps-num" id="myLikes">0</div><div class="ps-lbl">LIKES</div></div>
+    </div>
+    <button class="btn-edit" onclick="toast('✏️ Edição em breve!')">✏️ EDITAR PERFIL</button>
+  </div>
+  <div class="section-lbl">AS MINHAS CONFISSÕES</div>
+  <div class="feed-wrap" id="mylist"></div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div class="bnav">
+  <div class="ni active" id="ni-home" onclick="go('home')">
+    <svg class="ico" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>
+    <span class="lbl">INÍCIO</span>
+  </div>
+  <div class="ni" id="ni-search" onclick="go('search')">
+    <svg class="ico" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/></svg>
+    <span class="lbl">DESCOBRIR</span>
+  </div>
+  <div class="nc-fab" onclick="openNew()">✦</div>
+  <div class="ni" id="ni-notif" onclick="go('notif')">
+    <svg class="ico" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+    <span class="lbl">AVISOS</span>
+  </div>
+  <div class="ni" id="ni-profile" onclick="go('profile')">
+    <svg class="ico" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+    <span class="lbl">PERFIL</span>
+  </div>
+</div>
+</div><!-- /app -->
+</div><!-- /main-app -->
+
+<!-- NEW CONFESSION MODAL -->
+<div class="overlay" id="m-new" style="display:none" onclick="if(event.target.id==='m-new')document.getElementById('m-new').style.display='none'">
+  <div class="modal">
+    <div class="mhandle"></div>
+    <div class="mtitle">✦ Nova Confissão</div>
+    <div class="msub">Ninguém saberá que és tu 👻</div>
+    <textarea id="ctxt" placeholder="Escreve o teu segredo aqui... Podes ser completamente honesto/a." maxlength="500" oninput="document.getElementById('ccount').textContent=this.value.length"></textarea>
+    <div class="char-info">
+      <span style="font-family:'Barlow',sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Mínimo 10 caracteres</span>
+      <span><span id="ccount">0</span>/500</span>
+    </div>
+    <div class="cat-lbl">CATEGORIA</div>
+    <div class="cats" id="catlist"></div>
+    <div class="mfoot">
+      <div class="anon-tog"><div class="tog"><div class="tog-dot"></div></div><span>ANÓNIMO</span></div>
+      <button class="pub-btn" onclick="publish()">PUBLICAR ✦</button>
+    </div>
+  </div>
+</div>
+
+<!-- DETAIL MODAL -->
+<div class="overlay" id="m-det" style="display:none" onclick="if(event.target.id==='m-det')document.getElementById('m-det').style.display='none'">
+  <div class="modal" id="m-det-body"></div>
+</div>
+
+<!-- SHARE MODAL -->
+<div class="overlay" id="m-share" style="display:none" onclick="if(event.target.id==='m-share')document.getElementById('m-share').style.display='none'">
+  <div class="share-modal">
+    <div class="mhandle"></div>
+    <div class="mtitle">PARTILHAR</div>
+    <div class="msub">Escolhe onde queres partilhar</div>
+    <div class="share-grid">
+      <div class="share-opt wa" onclick="shareWA()"><div class="share-opt-icon">💬</div><div class="share-opt-name">WHATSAPP</div><div class="share-opt-sub">Partilhar via WhatsApp</div></div>
+      <div class="share-opt ig" onclick="shareIG()"><div class="share-opt-icon">📷</div><div class="share-opt-name">INSTAGRAM</div><div class="share-opt-sub">Copiar para Stories</div></div>
+      <div class="share-opt copy" onclick="shareCopy()"><div class="share-opt-icon">🔗</div><div class="share-opt-name">COPIAR LINK</div><div class="share-opt-sub">Copiar para área de transferência</div></div>
+      <div class="share-opt x" onclick="shareX()"><div class="share-opt-icon">✕</div><div class="share-opt-name">X (TWITTER)</div><div class="share-opt-sub">Partilhar no X</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- DELETE CONFIRM -->
+<div class="overlay" id="m-del" style="display:none" onclick="if(event.target.id==='m-del')document.getElementById('m-del').style.display='none'">
+  <div class="del-modal">
+    <div class="del-icon">🗑️</div>
+    <div class="del-title">APAGAR CONFISSÃO?</div>
+    <div class="del-sub">Esta ação é permanente e não pode ser desfeita. A tua confissão será removida para sempre.</div>
+    <div class="del-actions">
+      <button class="del-cancel" onclick="document.getElementById('m-del').style.display='none'">CANCELAR</button>
+      <button class="del-confirm" id="del-confirm-btn">APAGAR</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toastEl"></div>
+</body>
+</html>
